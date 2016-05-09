@@ -18,6 +18,7 @@
 
 
 import codecs
+import sqlite3
 import json
 import optparse
 import os.path
@@ -154,7 +155,7 @@ def load_definitions(path):
         return filter(lambda x: x and x[0] != '#', fp.read().splitlines())
 
 
-def parse_kanji_dic(path):
+def parse_kanjidic(path):
     results = {}
     for line in load_definitions(path):
         segments = line.split()
@@ -212,18 +213,55 @@ def parse_edict(path):
     return {'defs': results, 'indices': indices}
 
 
-def build_dict(output_dir, input_file, parser):
+def output_dict_json(output_dir, input_file, parser):
     if input_file is not None:
         base = os.path.splitext(os.path.basename(input_file))[0]
         with open(os.path.join(output_dir, base) + '.json', 'w') as fp:
-             # json.dump(parser(input_file), fp, sort_keys=True, indent=4, separators=(',', ': '))
              json.dump(parser(input_file), fp, separators=(',', ':'))
 
 
-def build(dict_dir, kanjidic, edict, enamdict):
-    build_dict(dict_dir, kanjidic, parse_kanji_dic)
-    build_dict(dict_dir, edict, parse_edict)
-    build_dict(dict_dir, enamdict, parse_edict)
+def build_db_json(dict_dir, kanjidic, edict, enamdict):
+    if kanjidic is not None:
+        output_dict_json(dict_dir, kanjidic, parse_kanjidic)
+    if edict is not None:
+        output_dict_json(dict_dir, edict, parse_edict)
+    if enamdict is not None:
+        output_dict_json(dict_dir, enamdict, parse_edict)
+
+
+def output_edict_sqlite(cursor, definitions):
+    cursor.execute('CREATE TABLE IF NOT EXISTS Vocab(id INTEGER PRIMARY KEY, expression TEXT, reading TEXT, tags TEXT)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS VocabGloss(glossary TEXT, vocabId INTEGER, FOREIGN KEY(vocabId) REFERENCES Vocab(id))')
+
+    for expression, reading, tags, *glossary in definitions:
+        cursor.execute('INSERT INTO Vocab VALUES(?, ?, ?, ?)', (None, expression, reading, tags))
+        vocabId = cursor.lastrowid
+        for gloss in glossary:
+            cursor.execute('INSERT INTO VocabGloss VALUES(?, ?)', (gloss, vocabId))
+
+
+def output_kanjidic_sqlite(cursor, definitions):
+    cursor.execute('CREATE TABLE IF NOT EXISTS Kanji(id INTEGER PRIMARY KEY, character TEXT, kunyomi TEXT, onyomi TEXT)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS KanjiGloss(glossary TEXT, kanjiId INTEGER, FOREIGN KEY(kanjiId) REFERENCES Kanji(id))')
+
+    for character, (kunyomi, onyomi, glossary) in definitions.items():
+        cursor.execute('INSERT INTO Kanji VALUES(?, ?, ?, ?)', (None, character, kunyomi, onyomi))
+        kanjiId = cursor.lastrowid
+        for gloss in glossary:
+            cursor.execute('INSERT INTO KanjiGloss VALUES(?, ?)', (gloss, kanjiId))
+
+
+def build_db_sqlite(db_path, kanjidic, edict, enamdict):
+    os.remove(db_path)
+
+    with sqlite3.connect(db_path) as db:
+        cursor = db.cursor()
+        if kanjidic is not None:
+            output_kanjidic_sqlite(cursor, parse_kanjidic(kanjidic))
+        if edict is not None:
+            output_edict_sqlite(cursor, parse_edict(edict)['defs'])
+        if enamdict is not None:
+            output_edict_sqlite(cursor, parse_edict(enamdict))
 
 
 def main():
@@ -231,14 +269,16 @@ def main():
     parser.add_option('--kanjidic', dest='kanjidic')
     parser.add_option('--edict', dest='edict')
     parser.add_option('--enamdict', dest='enamdict')
+    parser.add_option('--db', dest='db')
 
     options, args = parser.parse_args()
 
-    if len(args) == 0:
-        parser.print_help()
+    if len(args) == 0 and options.db is not None:
+        build_db_sqlite(options.db, options.kanjidic, options.edict, options.enamdict)
+    elif len(args) == 1 and options.db is None:
+        build_db_json(args[0], options.kanjidic, options.edict, options.enamdict)
     else:
-        build(args[0], options.kanjidic, options.edict, options.enamdict)
-
+        parser.print_help()
 
 if __name__ == '__main__':
     main()
